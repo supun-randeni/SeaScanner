@@ -35,6 +35,8 @@ FAKE_GPS_FIX = {
     "satellites": 10,
 }
 
+active_sensors = []
+
 # --- Signal handlers for clean shutdown ---
 def handle_sigterm(signum, frame):
     print("Signal received — shutting down")
@@ -76,6 +78,21 @@ def create_sensor(ip,directory):
 
     return sensor
 
+def hydroman_data_parser(data):
+    lat_start = data.find("lat") + len("lat: ")
+    lat_end = lat_start + data[lat_start:].find(" ")
+    lat = data[lat_start:lat_end]
+
+    lon_start = data.find("lon") + len("lon: ")
+    lon_end = lon_start + data[lon_start:].find(" ")
+    lon = data[lon_start:lon_end]
+
+    time_start = data.find("time") + len("time: ")
+    time_end = time_start + data[time_start:].find(" ")
+    time = data[time_start:time_end]
+
+    return (lat, lon, time)
+
 def listen_to_sensor(sensor, label):
     try:
         while not sensor_shutdown_event.is_set() and not shutdown_event.is_set():
@@ -104,6 +121,7 @@ def on_connect():
     # comms.register('RAW_DEPTH', 0)
     # comms.register('DEPTH_VALUE',0)
     comms.register('FSM_ENABLE_ACOMMS',0)
+    comms.register('HYDROMAN_NAV_DATA', 0)
     return True
 
 # def queue_callback(msg):
@@ -113,6 +131,15 @@ def on_connect():
 #     last_msg_time = time.time()
 #     msg.trace()
 #     return True
+
+def gps_callback(msg):
+    """callback for logging GPS data"""
+    if msg.is_string():
+        # parse data from hydroman data received from SeaBeaver
+        lat, long, time = hydroman_data_parser(msg.string())
+        for sensor in active_sensors:
+            sensor.log_gps_location(time, lat, long)
+
 
 def queue_callback(msg):
     """Callback for messages arriving in the active queue."""
@@ -139,11 +166,13 @@ def main():
     # Set up connection and subscriptions
     comms.set_on_connect_callback(on_connect)
     comms.add_active_queue('the_queue', queue_callback)
+    comms.add_active_queue('gps_queue', gps_callback)
     # comms.add_message_route_to_active_queue('the_queue', 'RAW_GPS')
     # comms.add_message_route_to_active_queue('the_queue', 'RAW_IMU')
     # comms.add_message_route_to_active_queue('the_queue', 'RAW_DEPTH')
     comms.add_message_route_to_active_queue('the_queue', 'DEPTH_VALUE')
     comms.add_message_route_to_active_queue('the_queue', 'FSM_ENABLE_ACOMMS')
+    comms.add_message_route_to_active_queue('gps_queue', 'HYDROMAN_NAV_DATA')
 
     # Connect to MOOSDB (update host/port as needed)
     #comms.run('localhost', 9000, 'pymoos_test')
@@ -184,6 +213,10 @@ def main():
 
                     Omniscan_Left = create_sensor("192.168.2.90", "Omniscan_Left_logs")
                     Omniscan_Right = create_sensor("192.168.2.92", "Omniscan_Right_logs")
+
+                    # add the created sensors to the active sensors list (global var)
+                    # this allows them to be accessed from gps_callback
+                    active_sensors = [Omniscan_Left, Omniscan_Right]
 
                     fake_fix_time = time.time()
                     for sensor in (Omniscan_Left, Omniscan_Right):
