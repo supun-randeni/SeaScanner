@@ -25,8 +25,8 @@ values_received = False
 # Temporary known fix used to verify that an NMEA_WRAPPER message is embedded
 # in both sonar logs. Replace this with the live MOOS GPS solution afterward.
 FAKE_GPS_FIX = {
-    "latitude": 42.3601,
-    "longitude": -71.0942,
+    "latitude": 87.0000,
+    "longitude": -87.0000,
     "altitude": 3.0,
     "hdop": 0.8,
     "geoid_separation": -28.0,
@@ -34,8 +34,6 @@ FAKE_GPS_FIX = {
     "quality": 1,
     "satellites": 10,
 }
-
-active_sensors = []
 
 # --- Signal handlers for clean shutdown ---
 def handle_sigterm(signum, frame):
@@ -139,6 +137,7 @@ def gps_callback(msg):
         lat, long, time = hydroman_data_parser(msg.string())
         for sensor in active_sensors:
             sensor.log_gps_location(time, lat, long)
+    return True
 
 
 def queue_callback(msg):
@@ -162,7 +161,7 @@ def queue_callback(msg):
 
 
 def main():
-    global values_received, last_msg_time
+    global values_received, last_msg_time, active_sensors
     # Set up connection and subscriptions
     comms.set_on_connect_callback(on_connect)
     comms.add_active_queue('the_queue', queue_callback)
@@ -205,6 +204,7 @@ def main():
                     Omniscan_Left = None
                     Omniscan_Right = None
                     is_sensors_on = False
+                    active_sensors = []
                     sensor_shutdown_event.clear()
 
             else:
