@@ -1,0 +1,47 @@
+#************************************************************/
+#*    NAME: 	Supun Randeni
+#*	  E-MAIL:	supun@mit.edu                                           
+#*    ORGN: 	Dept of Mechanical Engineering, MIT, Cambridge MA                                            
+#*    FILE: 	SeaScanner/DEPENDENCIES                                         
+#*    DATE: 	2023-08-21
+#*    INFO:   Adopted from LAMSS                                               
+#
+# Dependencies for SeaScanner
+#
+# This is a makefile in disguise.  WHITESPACE IS IMPORTANT, especially tabs. In emacs, you should do "M-x makefile-mode" to assist to syntax
+#
+# TO ADD YOUR DEPENDENCIES:
+# 1. if your dependency has the same package name for all supported distributions (newest Ubuntu LTS and newer), add it to the list under "all". Otherwise, add the correct package name under each distribution name.
+# 2. avoid the use of "sudo" in your commands; that is for the user to work out
+#************************************************************/
+
+
+all:
+	@echo "Installing distribution non-specific dependencies"
+	@apt-get update
+	@apt-get install \
+		gpp \
+		cmake \
+		build-essential \
+		libprotobuf-dev \
+		protobuf-compiler \
+		-y
+
+
+ubuntu: all
+	@echo "Installing Ubuntu specific dependencies"
+
+focal: bionic
+	@echo "Installing bionic specific dependencies"
+
+bionic: ubuntu
+	@echo "Installing bionic specific dependencies"
+
+xenial: ubuntu
+	@echo "Installing xenial specific dependencies"
+
+jessie: ubuntu
+	@echo "Installing jessie specific dependencies"
+
+stretch: all
+	@echo "Installing Debian specific dependencies"

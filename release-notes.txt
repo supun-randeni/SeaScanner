@@ -1,0 +1,20 @@
+***********************************************
+Release notes for SeaScanner
+***********************************************
+
+
+***********************************************
+# Version 1.0.0
+
+## General information
+
+## Build
+
+## Core apps
+
+## Interfaces
+
+## Libraries
+
+## Bugs
+

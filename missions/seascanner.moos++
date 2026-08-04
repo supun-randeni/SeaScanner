@@ -1,0 +1,92 @@
+ServerHost = localhost
+ServerPort = 9000
+Community  = VAL_SEASCANNER
+
+ProcessConfig = ANTLER
+{
+  // Stagger launches to reduce startup contention.
+  MSBetweenLaunches = 100
+
+  Run = MOOSDB               @ NewConsole = false
+  Run = pShare               @ NewConsole = false
+  Run = uXMS                 @ NewConsole = false
+  Run = uProcessWatch        @ NewConsole = false
+  Run = uQueryDB             @ NewConsole = false
+  Run = pLogger              @ NewConsole = false
+
+  Run = pOmniscan_SS         @ NewConsole = false
+  Run = iOmniscan_bootcamp.py @ NewConsole = false
+}
+
+ProcessConfig = MOOSDB
+{
+}
+
+ProcessConfig = pShare
+{
+  AppTick   = 4
+  CommsTick = 4
+
+  Input = route=192.168.0.102:9071
+
+  Log     = true
+  verbose = true
+}
+
+ProcessConfig = uXMS
+{
+  AppTick   = 4
+  CommsTick = 4
+
+  //var = RAW_GPS
+  //var = RAW_DEPTH
+  //var = RAW_IMU
+}
+
+ProcessConfig = uProcessWatch
+{
+  AppTick   = 4
+  CommsTick = 4
+
+  watch_all = true
+  nowatch   = uXMS*, uQueryDB*
+
+  allow_retractions = true
+  summary_wait      = 2
+  post_mapping      = PROC_WATCH_FULL_SUMMARY, UPW_FULL_SUMMARY
+}
+
+ProcessConfig = uQueryDB
+{
+  AppTick   = 4
+  CommsTick = 4
+
+  subs = RAW_GPS
+  subs = RAW_DEPTH
+  subs = RAW_IMU
+}
+
+ProcessConfig = pLogger
+{
+  AppTick   = 4
+  CommsTick = 4
+
+  // The launch script starts pAntler from the project root.
+  PATH = logs
+  File = LOG_VAL_Frontseat
+
+  SyncLog      = true @ 0.2
+  AsyncLog     = true
+  FileTimeStamp = true
+
+  Log = RAW_GPS   @ 0
+  Log = RAW_IMU   @ 0
+  Log = RAW_DEPTH @ 0
+}
+
+ProcessConfig = pOmniscan_SS
+{
+  AppTick   = 4
+  CommsTick = 4
+}
+
