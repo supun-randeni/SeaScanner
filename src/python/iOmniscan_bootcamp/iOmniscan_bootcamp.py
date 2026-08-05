@@ -133,6 +133,7 @@ def on_connect():
 
 def gps_callback(msg):
     """callback for logging GPS data"""
+    print(f"GPS callback msg received: {msg}")
     try:
         if msg.is_string():
             # parse data from hydroman data received from SeaBeaver
@@ -140,7 +141,7 @@ def gps_callback(msg):
             for sensor in active_sensors:
                 sensor.log_gps_location(time, lat, long)
     except Exception as e:
-        print("error in gps_callback")
+        print(f"error in gps_callback: {e}")
     return True
 
 
