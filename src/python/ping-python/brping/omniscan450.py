@@ -29,22 +29,183 @@ MAX_LOG_SIZE_MB = 500
 LOG_BUFFER_SIZE_BYTES = 1024 * 1024
 LOG_FLUSH_INTERVAL_SECONDS = 1.0
 
-class Omniscan450(PingDevice):
-    def __init__(self, logging = False, log_directory = None):
-        super().__init__(payload_dict=definitions.payload_dict_omniscan450)
-        self.logging = logging
-        self.log_directory = log_directory
-        self.bytes_written = None
-        self.current_log = None
+class LogFile:
+    def __init__(self, log_dir, log_lock):
+        self.log_directory = log_dir
+        self._log_lock = log_lock if log_lock is not None else threading.RLock()
         self._log_file = None
         self._last_log_flush = None
-        self._log_lock = threading.RLock()
-        
+    
+    # Write data to .svlog file
+    def write_data(self, msg):
+        if not self._log_file is None:
+            return
+
+        with self._log_lock:
+            try:
+                data = msg.msg_data
+                if os.path.getsize(self._log_file) + len(data) > MAX_LOG_SIZE_MB * 1000000:
+                    self.new_log(log_directory=self.log_directory)
+
+                self._log_file.write(data)
+
+                now = time.monotonic()
+                if now - self._last_log_flush >= LOG_FLUSH_INTERVAL_SECONDS:
+                    self._log_file.flush()
+                    self._last_log_flush = now
+
+            except (OSError, IOError) as e:
+                print(
+                    f"[LOGGING ERROR] Failed to write to log file {self.current_log}: {e}"
+                )
+                self.stop_logging()
+
+            except Exception as e:
+                print(f"[LOGGING ERROR] Unexpected error: {e}")
+                self.stop_logging()
+    
+    # Enable logging
+    def start_logging(self, new_log=False, log_directory=None):
+        if self.logging:
+            return
+
+        if self.current_log is None or new_log:
+            self.new_log(log_directory)
+        else:
+            self._log_file = open(
+                self.current_log, "ab", buffering=LOG_BUFFER_SIZE_BYTES
+            )
+            self._last_log_flush = time.monotonic()
+            self.logging = True
+
+    # Disable logging
+    def stop_logging(self):
+        self.logging = False
+        with self._log_lock:
+            self._close_log_file()
+
+    def _close_log_file(self):
+        if self._log_file is None:
+            return
+
+        with self._log_lock:
+            try:
+                self._log_file.flush()
+                self._log_file.close()
+            finally:
+                self._log_file = None
+                self._last_log_flush = None
+
+    # Creates a new log file
+    def new_log(self, log_directory=None):
+        self._close_log_file()
+
+        dt = datetime.now()
+        save_name = dt.strftime("%Y-%m-%d-%H-%M-%S-%f")
+
+        if log_directory is None:
+            project_root = Path.cwd().parent
+            self.log_directory = project_root / "logs/omniscan"
+        else:
+            self.log_directory = Path(log_directory)
+
+        self.log_directory.mkdir(parents=True, exist_ok=True)
+
+        log_path = self.log_directory / f"{save_name}.svlog"
+
+        self.current_log = log_path
+
+        with self._log_lock:
+            self._log_file = open(log_path, "xb", buffering=LOG_BUFFER_SIZE_BYTES)
+            self._last_log_flush = time.monotonic()
+            self.logging = True
+
+            print(f"Logging to {self.current_log}")
+
+            self._log_file.write_data(self.build_metadata_packet())
+    
+    # Builds the packet containing metadata for the beginning of .svlog
+    def build_metadata_packet(self):
+        # protocol = "tcp"  # default fallback
+        # if self.iodev:
+        #     if self.iodev.type == socket.SOCK_STREAM:
+        #         protocol = "tcp"
+        #     elif self.iodev.type == socket.SOCK_DGRAM:
+        #         protocol = "udp"
+        #
+        # if self.server_address:
+        #     url = f"{protocol}://{self.server_address[0]}:{self.server_address[1]}"
+        # else:
+        #     url = f"{protocol}://unknown"
+        #
+        # Hard coding the urls for now
+        content = {
+            "session_id": 1,
+            "session_uptime": 0.0,
+            "session_devices": [{"url": "tcp://192.168.2.90", "product_id": "os450"}, {"url": "tcp://192.168.2.92", "product_id": "os450"}],
+            "session_platform": None,
+            "session_clients": [],
+            "session_plan_name": None,
+            "is_recording": True,
+            "sonarlink_version": "",
+            "os_hostname": platform.node(),
+            "os_uptime": None,
+            "os_version": platform.version(),
+            "os_platform": platform.system().lower(),
+            "os_release": platform.release(),
+            "process_path": sys.executable,
+            "process_version": f"v{platform.python_version()}",
+            "process_uptime": time.process_time(),
+            "process_arch": platform.machine(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp_timezone_offset": datetime.now()
+            .astimezone()
+            .utcoffset()
+            .total_seconds()
+            // 60,
+        }
+
+        json_bytes = json.dumps(content, indent=2).encode("utf-8")
+
+        m = pingmessage.PingMessage(definitions.OMNISCAN450_JSON_WRAPPER)
+        m.payload = json_bytes
+        m.payload_length = len(json_bytes)
+
+        msg_data = bytearray()
+        msg_data += b"BR"
+        msg_data += m.payload_length.to_bytes(2, "little")
+        msg_data += m.message_id.to_bytes(2, "little")
+        msg_data += m.dst_device_id.to_bytes(1, "little")
+        msg_data += m.src_device_id.to_bytes(1, "little")
+        msg_data += m.payload
+
+        checksum = sum(msg_data) & 0xFFFF
+        msg_data += bytearray(
+            struct.pack(
+                pingmessage.PingMessage.endianess
+                + pingmessage.PingMessage.checksum_format,
+                checksum,
+            )
+        )
+
+        m.msg_data = msg_data
+        m.checksum = checksum
+
+        return m
+
+
+class Omniscan450(PingDevice):
+    def __init__(self, logging=False, log_file):
+        super().__init__(payload_dict=definitions.payload_dict_omniscan450)
+        self.logging = logging
+        self.current_log = None
+        self._log_file = log_file
+
     def initialize(self):
-        if (self.readDeviceInformation() is None):
+        if self.readDeviceInformation() is None:
             return False
         if self.logging:
-            self.new_log(self.log_directory)
+            self._log_file.new_log(self.log_directory)
         return True
 
     ##
@@ -73,7 +234,7 @@ class Omniscan450(PingDevice):
     def get_os_mono_profile(self):
         if self.request(definitions.OMNISCAN450_OS_MONO_PROFILE) is None:
             return None
-        data = ({
+        data = {
             "ping_number": self._ping_number,  # sequentially assigned from 0 at power up
             "start_mm": self._start_mm,  # Units: mm; The beginning of the scan region in mm from the transducer.
             "length_mm": self._length_mm,  # Units: mm; The length of the scan region.
@@ -82,20 +243,34 @@ class Omniscan450(PingDevice):
             "gain_index": self._gain_index,  # 0-7
             "num_results": self._num_results,  # length of pwr_results array
             "sos_dmps": self._sos_dmps,  # speed of sound, decimeters/sec
-            "channel_number": self._channel_number,  # 
-            "reserved": self._reserved,  # 
-            "pulse_duration_sec": self._pulse_duration_sec,  # 
-            "analog_gain": self._analog_gain,  # 
-            "max_pwr_db": self._max_pwr_db,  # 
-            "min_pwr_db": self._min_pwr_db,  # 
-            "transducer_heading_deg": self._transducer_heading_deg,  # 
-            "vehicle_heading_deg": self._vehicle_heading_deg,  # 
+            "channel_number": self._channel_number,  #
+            "reserved": self._reserved,  #
+            "pulse_duration_sec": self._pulse_duration_sec,  #
+            "analog_gain": self._analog_gain,  #
+            "max_pwr_db": self._max_pwr_db,  #
+            "min_pwr_db": self._min_pwr_db,  #
+            "transducer_heading_deg": self._transducer_heading_deg,  #
+            "vehicle_heading_deg": self._vehicle_heading_deg,  #
             "pwr_results": self._pwr_results,  # An array of return strength measurements taken at regular intervals across the scan region. The first element is the closest measurement to the sensor, and the last element is the farthest measurement in the scanned range. power results scaled from min_pwr_db to max_pwr_db
-        })
+        }
         return data
 
-
-    def control_os_ping_params(self, start_mm=0, length_mm=5000, msec_per_ping=0, reserved_1=0, reserved_2=0, pulse_len_percent=0.002, filter_duration_percent=0.0015, gain_index=-1, num_results=600, enable=True, reserved_3=0, reserved_4=0, reserved_5=0):
+    def control_os_ping_params(
+        self,
+        start_mm=0,
+        length_mm=5000,
+        msec_per_ping=0,
+        reserved_1=0,
+        reserved_2=0,
+        pulse_len_percent=0.002,
+        filter_duration_percent=0.0015,
+        gain_index=-1,
+        num_results=600,
+        enable=True,
+        reserved_3=0,
+        reserved_4=0,
+        reserved_5=0,
+    ):
         m = pingmessage.PingMessage(definitions.OMNISCAN450_OS_PING_PARAMS)
         m.start_mm = start_mm
         m.length_mm = length_mm
@@ -128,23 +303,37 @@ class Omniscan450(PingDevice):
 
         m = pingmessage.PingMessage(
             definitions.OMNISCAN450_NMEA_WRAPPER,
-            payload_dict=definitions.payload_dict_omniscan450)
+            payload_dict=definitions.payload_dict_omniscan450,
+        )
         m.nmea_sentence = sentence
         m.pack_msg_data()
-        self.write_data(m)
+        self._log_file.write_data(m)
         return m
 
     @staticmethod
     def _nmea_coordinate(value, degree_width):
-        hemisphere = ("N" if value >= 0 else "S") if degree_width == 2 else ("E" if value >= 0 else "W")
+        hemisphere = (
+            ("N" if value >= 0 else "S")
+            if degree_width == 2
+            else ("E" if value >= 0 else "W")
+        )
         absolute = abs(float(value))
         degrees = int(absolute)
         minutes = (absolute - degrees) * 60.0
         return f"{degrees:0{degree_width}d}{minutes:07.4f}", hemisphere
 
-    def log_gps_location(self, utc_time, latitude, longitude, altitude=0.0,
-                         hdop=0.0, geoid_separation=0.0, reference_id=0,
-                         quality=0, satellites=0):
+    def log_gps_location(
+        self,
+        utc_time,
+        latitude,
+        longitude,
+        altitude=0.0,
+        hdop=0.0,
+        geoid_separation=0.0,
+        reference_id=0,
+        quality=0,
+        satellites=0,
+    ):
         """Encode a GPS fix as GPGGA and append it in NMEA_WRAPPER packet 109."""
         utc = datetime.fromtimestamp(float(utc_time), tz=timezone.utc)
         utc_field = utc.strftime("%H%M%S") + f".{utc.microsecond // 10000:02d}"
@@ -160,7 +349,6 @@ class Omniscan450(PingDevice):
         for byte in body.encode("ascii"):
             checksum ^= byte
         return self.log_nmea_sentence(f"${body}*{checksum:02X}")
-
 
     def readDeviceInformation(self):
         return self.request(definitions.COMMON_DEVICE_INFORMATION)
@@ -183,7 +371,10 @@ class Omniscan450(PingDevice):
     def scale_power(msg):
         scaled_power_results = []
         for i in range(len(msg.pwr_results)):
-            scaled_power_results.append(msg.min_pwr_db + (msg.pwr_results[i] / 65535.0) * (msg.max_pwr_db - msg.min_pwr_db))
+            scaled_power_results.append(
+                msg.min_pwr_db
+                + (msg.pwr_results[i] / 65535.0) * (msg.max_pwr_db - msg.min_pwr_db)
+            )
         final_power_results = tuple(scaled_power_results)
         return final_power_results
 
@@ -191,13 +382,13 @@ class Omniscan450(PingDevice):
     @staticmethod
     def read_packet(file):
         sync = file.read(2)
-        if sync != b'BR':
+        if sync != b"BR":
             return None
 
         payload_len_bytes = file.read(2)
         if len(payload_len_bytes) < 2:
             return None
-        payload_len = int.from_bytes(payload_len_bytes, 'little')
+        payload_len = int.from_bytes(payload_len_bytes, "little")
 
         msg_id = file.read(2)
         if len(msg_id) < 2:
@@ -211,153 +402,8 @@ class Omniscan450(PingDevice):
         msg_bytes = sync + payload_len_bytes + msg_id + rest
         return pingmessage.PingMessage(msg_data=msg_bytes)
 
-    # Builds the packet containing metadata for the beginning of .svlog
-    def build_metadata_packet(self):
-        protocol = "tcp" # default fallback
-        if self.iodev:
-            if self.iodev.type == socket.SOCK_STREAM:
-                protocol = "tcp"
-            elif self.iodev.type == socket.SOCK_DGRAM:
-                protocol = "udp"
 
-        if self.server_address:
-            url = f"{protocol}://{self.server_address[0]}:{self.server_address[1]}"
-        else:
-            url = f"{protocol}://unknown"
 
-        content = {
-            "session_id": 1,
-            "session_uptime": 0.0,
-            "session_devices": [
-                {
-                    "url": url,
-                    "product_id": "os450"
-                }
-            ],
-            "session_platform": None,
-            "session_clients": [],
-            "session_plan_name": None,
-
-            "is_recording": True,
-            "sonarlink_version": "",
-            "os_hostname": platform.node(),
-            "os_uptime": None,
-            "os_version": platform.version(),
-            "os_platform": platform.system().lower(),
-            "os_release": platform.release(),
-
-            "process_path": sys.executable,
-            "process_version": f"v{platform.python_version()}",
-            "process_uptime": time.process_time(),
-            "process_arch": platform.machine(),
-
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "timestamp_timezone_offset": datetime.now().astimezone().utcoffset().total_seconds() // 60
-        }
-
-        json_bytes = json.dumps(content, indent=2).encode("utf-8")
-
-        m = pingmessage.PingMessage(definitions.OMNISCAN450_JSON_WRAPPER)
-        m.payload = json_bytes
-        m.payload_length = len(json_bytes)
-
-        msg_data = bytearray()
-        msg_data += b"BR"
-        msg_data += m.payload_length.to_bytes(2, "little")
-        msg_data += m.message_id.to_bytes(2, "little")
-        msg_data += m.dst_device_id.to_bytes(1, "little")
-        msg_data += m.src_device_id.to_bytes(1, "little")
-        msg_data += m.payload
-
-        checksum = sum(msg_data) & 0xFFFF
-        msg_data += bytearray(struct.pack(pingmessage.PingMessage.endianess + pingmessage.PingMessage.checksum_format, checksum))
-
-        m.msg_data = msg_data
-        m.checksum = checksum
-
-        return m
-
-    # Enable logging
-    def start_logging(self, new_log = False, log_directory = None):
-        if self.logging:
-            return
-
-        if self.current_log is None or new_log:
-            self.new_log(log_directory)
-        else:
-            self._log_file = open(self.current_log, 'ab', buffering=LOG_BUFFER_SIZE_BYTES)
-            self._last_log_flush = time.monotonic()
-            self.logging = True
-
-    # Disable logging
-    def stop_logging(self):
-        self.logging = False
-        self._close_log_file()
-
-    def _close_log_file(self):
-        if self._log_file is None:
-            return
-
-        try:
-            self._log_file.flush()
-            self._log_file.close()
-        finally:
-            self._log_file = None
-            self._last_log_flush = None
-
-    # Creates a new log file
-    def new_log(self, log_directory=None):
-        self._close_log_file()
-
-        dt = datetime.now()
-        save_name = dt.strftime("%Y-%m-%d-%H-%M-%S-%f")
-
-        if log_directory is None:
-            project_root = Path.cwd().parent
-            self.log_directory = project_root / "logs/omniscan"
-        else:
-            self.log_directory = Path(log_directory)
-
-        self.log_directory.mkdir(parents=True, exist_ok=True)
-
-        log_path = self.log_directory / f"{save_name}.svlog"
-
-        self.current_log = log_path
-        self.bytes_written = 0
-        self._log_file = open(log_path, 'xb', buffering=LOG_BUFFER_SIZE_BYTES)
-        self._last_log_flush = time.monotonic()
-        self.logging = True
-
-        print(f"Logging to {self.current_log}")
-
-        self.write_data(self.build_metadata_packet())
-
-    # Write data to .svlog file
-    def write_data(self, msg):
-        if not self.logging or self._log_file is None:
-            return
-
-        with self._log_lock:
-            try:
-                data = msg.msg_data
-                if self.bytes_written + len(data) > MAX_LOG_SIZE_MB * 1000000:
-                    self.new_log(log_directory=self.log_directory)
-
-                self._log_file.write(data)
-                self.bytes_written += len(data)
-
-                now = time.monotonic()
-                if now - self._last_log_flush >= LOG_FLUSH_INTERVAL_SECONDS:
-                    self._log_file.flush()
-                    self._last_log_flush = now
-
-            except (OSError, IOError) as e:
-                print(f"[LOGGING ERROR] Failed to write to log file {self.current_log}: {e}")
-                self.stop_logging()
-
-            except Exception as e:
-                print(f"[LOGGING ERROR] Unexpected error: {e}")
-                self.stop_logging()
 
     # Override wait_message to format power results before returning
     def wait_message(self, message_ids, timeout=0.5):
@@ -367,12 +413,14 @@ class Omniscan450(PingDevice):
             if msg is not None:
                 if msg.message_id == definitions.OMNISCAN450_OS_MONO_PROFILE:
                     power_byte_array = bytearray(msg.pwr_results)
-                    power_results = struct.unpack('<' + 'H' * int(msg.num_results), power_byte_array)
+                    power_results = struct.unpack(
+                        "<" + "H" * int(msg.num_results), power_byte_array
+                    )
                     msg.pwr_results = power_results
 
                 if msg.message_id in message_ids:
                     if self.logging:
-                        self.write_data(msg)
+                        self._log_file.write_data(msg)
                     return msg
             time.sleep(0.005)
         return None
@@ -385,7 +433,7 @@ class Omniscan450(PingDevice):
     #
     def connect_tcp(self, host: str = None, port: int = 12345, timeout: float = 5.0):
         if host is None:
-            host = '0.0.0.0'
+            host = "0.0.0.0"
 
         self.server_address = (host, port)
         try:
@@ -405,14 +453,16 @@ class Omniscan450(PingDevice):
     # @brief Read available data from the io device
     def read_io(self):
         if self.iodev == None:
-            raise Exception("IO device is null, please configure a connection before using the class.")
-        elif type(self.iodev).__name__ == 'Serial':
+            raise Exception(
+                "IO device is null, please configure a connection before using the class."
+            )
+        elif type(self.iodev).__name__ == "Serial":
             bytes = self.iodev.read(self.iodev.in_waiting)
             self._input_buffer.extendleft(bytes)
-        else: # Socket
+        else:  # Socket
             buffer_size = 4096
             while True:
-                try: # Check if we are reading before closing a connection
+                try:  # Check if we are reading before closing a connection
                     bytes = self.iodev.recv(buffer_size)
 
                     if not bytes:
@@ -426,19 +476,44 @@ class Omniscan450(PingDevice):
                         break
 
                 except BlockingIOError as exception:
-                    pass # Ignore exceptions related to read before connection, a result of UDP nature
+                    pass  # Ignore exceptions related to read before connection, a result of UDP nature
 
                 except ConnectionResetError as e:
                     raise ConnectionError("Socket connection was reset: %s" % str(e))
+
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Ping python library example.")
-    parser.add_argument('--device', action="store", required=False, type=str, help="Ping device port. E.g: /dev/ttyUSB0")
-    parser.add_argument('--baudrate', action="store", type=int, default=115200, help="Ping device baudrate. E.g: 115200")
-    parser.add_argument('--udp', action="store", required=False, type=str, help="Ping UDP server. E.g: 192.168.2.2:9092")
-    parser.add_argument('--tcp', action="store", required=False, type=str, help="Omniscan IP:Port. E.g: 192.168.2.92:51200")
+    parser.add_argument(
+        "--device",
+        action="store",
+        required=False,
+        type=str,
+        help="Ping device port. E.g: /dev/ttyUSB0",
+    )
+    parser.add_argument(
+        "--baudrate",
+        action="store",
+        type=int,
+        default=115200,
+        help="Ping device baudrate. E.g: 115200",
+    )
+    parser.add_argument(
+        "--udp",
+        action="store",
+        required=False,
+        type=str,
+        help="Ping UDP server. E.g: 192.168.2.2:9092",
+    )
+    parser.add_argument(
+        "--tcp",
+        action="store",
+        required=False,
+        type=str,
+        help="Omniscan IP:Port. E.g: 192.168.2.92:51200",
+    )
     args = parser.parse_args()
     if args.device is None and args.udp is None and args.tcp is None:
         parser.print_help()
@@ -448,10 +523,10 @@ if __name__ == "__main__":
     if args.device is not None:
         p.connect_serial(args.device, args.baudrate)
     elif args.udp is not None:
-        (host, port) = args.udp.split(':')
+        host, port = args.udp.split(":")
         p.connect_udp(host, int(port))
     elif args.tcp is not None:
-        (host, port) = args.tcp.split(':')
+        host, port = args.tcp.split(":")
         p.connect_tcp(host, int(port))
 
     print("Initialized: %s" % p.initialize())
