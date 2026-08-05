@@ -10,6 +10,7 @@ import pymoos
 import time
 
 from brping import Omniscan450
+from brping.omniscan450 import LogFile
 from brping import definitions
 import threading
 import signal
@@ -37,7 +38,7 @@ signal.signal(signal.SIGINT, handle_sigterm)
 
 # SENSOR STUFF
 def create_sensor(ip, log_file):
-    sensor = Omniscan450(logging=True, log_file)
+    sensor = Omniscan450(log_file)
 
     sensor_ip = ip
     port = 51200
@@ -125,7 +126,17 @@ def gps_callback(msg):
             long = float(long)
             time = float(time)
             for sensor in active_sensors:
-                sensor.log_gps_location(utc_time=time, latitude=lat, longitude=long, altitude=0.0, hdop=0.0, geoid_separation=0.0, reference_id=0, quality=0, satellites=0)
+                sensor.log_gps_location(
+                    utc_time=time,
+                    latitude=lat,
+                    longitude=long,
+                    altitude=0.0,
+                    hdop=0.0,
+                    geoid_separation=0.0,
+                    reference_id=0,
+                    quality=0,
+                    satellites=0,
+                )
     except Exception as e:
         print(f"error in gps_callback: {e}")
     return True
@@ -206,7 +217,7 @@ def main():
             else:
                 if is_sensors_on is False:
                     print("FSM_ENABLE_ACOMMS is true — starting sensors")
-                    
+
                     Omniscan_Left = create_sensor("192.168.2.90", log_file)
                     Omniscan_Right = create_sensor("192.168.2.92", log_file)
 

@@ -29,22 +29,23 @@ MAX_LOG_SIZE_MB = 500
 LOG_BUFFER_SIZE_BYTES = 1024 * 1024
 LOG_FLUSH_INTERVAL_SECONDS = 1.0
 
+
 class LogFile:
     def __init__(self, log_dir, log_lock):
         self.log_directory = log_dir
         self._log_lock = log_lock if log_lock is not None else threading.RLock()
         self._log_file = None
         self._last_log_flush = None
-    
+
     # Write data to .svlog file
     def write_data(self, msg):
-        if not self._log_file is None:
-            return
-
         with self._log_lock:
             try:
                 data = msg.msg_data
-                if os.path.getsize(self._log_file) + len(data) > MAX_LOG_SIZE_MB * 1000000:
+                if (
+                    os.path.getsize(self._log_file) + len(data)
+                    > MAX_LOG_SIZE_MB * 1000000
+                ):
                     self.new_log(log_directory=self.log_directory)
 
                 self._log_file.write(data)
@@ -63,12 +64,9 @@ class LogFile:
             except Exception as e:
                 print(f"[LOGGING ERROR] Unexpected error: {e}")
                 self.stop_logging()
-    
+
     # Enable logging
     def start_logging(self, new_log=False, log_directory=None):
-        if self.logging:
-            return
-
         if self.current_log is None or new_log:
             self.new_log(log_directory)
         else:
@@ -76,11 +74,9 @@ class LogFile:
                 self.current_log, "ab", buffering=LOG_BUFFER_SIZE_BYTES
             )
             self._last_log_flush = time.monotonic()
-            self.logging = True
 
     # Disable logging
     def stop_logging(self):
-        self.logging = False
         with self._log_lock:
             self._close_log_file()
 
@@ -118,12 +114,11 @@ class LogFile:
         with self._log_lock:
             self._log_file = open(log_path, "xb", buffering=LOG_BUFFER_SIZE_BYTES)
             self._last_log_flush = time.monotonic()
-            self.logging = True
 
             print(f"Logging to {self.current_log}")
 
-            self._log_file.write_data(self.build_metadata_packet())
-    
+            self.write_data(self.build_metadata_packet())
+
     # Builds the packet containing metadata for the beginning of .svlog
     def build_metadata_packet(self):
         # protocol = "tcp"  # default fallback
@@ -142,7 +137,10 @@ class LogFile:
         content = {
             "session_id": 1,
             "session_uptime": 0.0,
-            "session_devices": [{"url": "tcp://192.168.2.90", "product_id": "os450"}, {"url": "tcp://192.168.2.92", "product_id": "os450"}],
+            "session_devices": [
+                {"url": "tcp://192.168.2.90:51200", "product_id": "os450"},
+                {"url": "tcp://192.168.2.92:51200", "product_id": "os450"},
+            ],
             "session_platform": None,
             "session_clients": [],
             "session_plan_name": None,
@@ -195,17 +193,14 @@ class LogFile:
 
 
 class Omniscan450(PingDevice):
-    def __init__(self, logging=False, log_file):
+    def __init__(self, log_file):
         super().__init__(payload_dict=definitions.payload_dict_omniscan450)
-        self.logging = logging
         self.current_log = None
         self._log_file = log_file
 
     def initialize(self):
         if self.readDeviceInformation() is None:
             return False
-        if self.logging:
-            self._log_file.new_log(self.log_directory)
         return True
 
     ##
@@ -402,9 +397,6 @@ class Omniscan450(PingDevice):
         msg_bytes = sync + payload_len_bytes + msg_id + rest
         return pingmessage.PingMessage(msg_data=msg_bytes)
 
-
-
-
     # Override wait_message to format power results before returning
     def wait_message(self, message_ids, timeout=0.5):
         tstart = time.time()
@@ -419,7 +411,7 @@ class Omniscan450(PingDevice):
                     msg.pwr_results = power_results
 
                 if msg.message_id in message_ids:
-                    if self.logging:
+                    if self._log_file is not None:
                         self._log_file.write_data(msg)
                     return msg
             time.sleep(0.005)
