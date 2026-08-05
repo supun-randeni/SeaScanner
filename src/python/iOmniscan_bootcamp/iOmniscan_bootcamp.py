@@ -90,7 +90,11 @@ def hydroman_data_parser(data):
     time_end = time_start + data[time_start:].find(" ")
     time = data[time_start:time_end]
 
-    return (lat, lon, time)
+    heading_start = data.find("heading") + len("heading: ")
+    heading_end = heading_start + data[heading_start:].find(" ")
+    heading = data[heading_start:heading_end]
+
+    return (lat, lon, time, heading)
 
 def listen_to_sensor(sensor, label):
     try:
@@ -136,12 +140,13 @@ def gps_callback(msg):
     try:
         if msg.is_string():
             # parse data from hydroman data received from SeaBeaver
-            lat, long, time = hydroman_data_parser(msg.string())
+            lat, long, time, heading = hydroman_data_parser(msg.string())
             lat = float(lat)
             long = float(long)
             time = float(time)
             for sensor in active_sensors:
                 sensor.log_gps_location(utc_time=time, latitude=lat, longitude=long, altitude=0.0, hdop=0.0, geoid_separation=0.0, reference_id=0, quality=0, satellites=0)
+                sensor.log_heading_information(heading)
     except Exception as e:
         print(f"error in gps_callback: {e}")
     return True

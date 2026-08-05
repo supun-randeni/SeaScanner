@@ -160,6 +160,13 @@ class Omniscan450(PingDevice):
         for byte in body.encode("ascii"):
             checksum ^= byte
         return self.log_nmea_sentence(f"${body}*{checksum:02X}")
+    
+    def log_heading_information(self, heading):
+        body = f"$GPHDT,{str(heading)},T"
+        checksum = 0
+        for byte in body.encode("ascii"):
+            checksum ^= byte
+        return self.log_nmea_sentence(f"${body}*{checksum:02X}")
 
 
     def readDeviceInformation(self):
