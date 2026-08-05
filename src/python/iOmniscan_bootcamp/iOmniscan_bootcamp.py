@@ -21,6 +21,7 @@ sensor_shutdown_event = threading.Event() # sensor-only shutdown
 comms = pymoos.comms()
 sensor_enable_requested = False
 values_received = False
+active_sensors = []
 
 # Temporary known fix used to verify that an NMEA_WRAPPER message is embedded
 # in both sonar logs. Replace this with the live MOOS GPS solution afterward.
@@ -132,11 +133,14 @@ def on_connect():
 
 def gps_callback(msg):
     """callback for logging GPS data"""
-    if msg.is_string():
-        # parse data from hydroman data received from SeaBeaver
-        lat, long, time = hydroman_data_parser(msg.string())
-        for sensor in active_sensors:
-            sensor.log_gps_location(time, lat, long)
+    try:
+        if msg.is_string():
+            # parse data from hydroman data received from SeaBeaver
+            lat, long, time = hydroman_data_parser(msg.string())
+            for sensor in active_sensors:
+                sensor.log_gps_location(time, lat, long)
+    except Exception as e:
+        print("error in gps_callback")
     return True
 
 
